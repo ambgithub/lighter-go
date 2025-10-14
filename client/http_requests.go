@@ -24,23 +24,38 @@ func (c *HTTPClient) parseResultStatus(respBody []byte) error {
 	return nil
 }
 
+// getAndParseL2HTTPResponse 现在使用新的通用GET方法
 func (c *HTTPClient) getAndParseL2HTTPResponse(path string, params map[string]any, result interface{}) error {
-	u, err := url.Parse(c.endpoint)
+	// 构造完整的URL
+	fullURL, err := url.Parse(c.endpoint)
 	if err != nil {
 		return err
 	}
-	u.Path = path
+	fullURL.Path = path
 
-	q := u.Query()
+	// 添加查询参数
+	q := fullURL.Query()
 	for k, v := range params {
 		q.Set(k, fmt.Sprintf("%v", v))
 	}
-	u.RawQuery = q.Encode()
-	resp, err := httpClient.Get(u.String())
+	fullURL.RawQuery = q.Encode()
+
+	// 创建新的请求
+	req, err := http.NewRequest("GET", fullURL.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	// 添加默认的headers
+	req.Header = c.defaultHeaders.Clone()
+
+	// 发送请求
+	resp, err := c.Client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
@@ -91,7 +106,7 @@ func (c *HTTPClient) SendRawTx(tx txtypes.TxInfo) (string, error) {
 	req, _ := http.NewRequest("POST", c.endpoint+"/api/v1/sendTx", strings.NewReader(data.Encode()))
 	req.Header.Set("Channel-Name", c.channelName)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := httpClient.Do(req)
+	resp, err := c.Client.Do(req)
 	if err != nil {
 		return "", err
 	}
