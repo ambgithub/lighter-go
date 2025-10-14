@@ -54,6 +54,7 @@ type CreateGroupedOrdersTxReq struct {
 	Orders       []*CreateOrderTxReq
 }
 
+// sss
 type ModifyOrderTxReq struct {
 	MarketIndex  uint8
 	Index        int64
