@@ -2,14 +2,13 @@ package types
 
 import (
 	"fmt"
-	"time"
-
 	"github.com/ambgithub/lighter-go/signer"
 	"github.com/ambgithub/lighter-go/types/txtypes"
 	g "github.com/elliottech/poseidon_crypto/field/goldilocks"
 	gFp5 "github.com/elliottech/poseidon_crypto/field/goldilocks_quintic_extension"
 	p2 "github.com/elliottech/poseidon_crypto/hash/poseidon2_goldilocks"
 	ethCommon "github.com/ethereum/go-ethereum/common"
+	"time"
 )
 
 type TransactOpts struct {
