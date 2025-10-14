@@ -24,7 +24,7 @@ func (c *HTTPClient) parseResultStatus(respBody []byte) error {
 	return nil
 }
 
-// getAndParseL2HTTPResponse 现在使用新的通用GET方法
+// getAndParseL2HTTPResponse 现在使用新的通用GET
 func (c *HTTPClient) getAndParseL2HTTPResponse(path string, params map[string]any, result interface{}) error {
 	// 构造完整的URL
 	fullURL, err := url.Parse(c.endpoint)
@@ -54,7 +54,6 @@ func (c *HTTPClient) getAndParseL2HTTPResponse(path string, params map[string]an
 		return err
 	}
 	defer resp.Body.Close()
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err

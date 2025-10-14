@@ -38,7 +38,7 @@ type HTTPClient struct {
 	endpoint            string       // API的基础URL
 	defaultHeaders      http.Header  // 存储所有请求都将携带的默认Header
 	channelName         string       // 旧版库中的字段，予以保留
-	fatFingerProtection bool         // 旧版库中的字段，予以保留
+	fatFingerProtection bool         // 旧版库中的字段，保留
 }
 
 // NewHTTPClient 创建一个新的、可配置的HTTPClient实例。
