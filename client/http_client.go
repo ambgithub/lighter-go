@@ -61,7 +61,7 @@ func NewHTTPClient(baseUrl string, options ...HTTPClientOption) (*HTTPClient, er
 		option(c)
 	}
 
-	// 如果在应用选项后，Client仍未被自定义，则创建一个默认的
+	// 如果在应用选项后，Client仍未被自定义，则创建一个默认
 	if c.Client == nil {
 		c.Client = &http.Client{
 			Timeout: time.Second * 30,
