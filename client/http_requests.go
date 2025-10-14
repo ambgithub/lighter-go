@@ -45,7 +45,6 @@ func (c *HTTPClient) getAndParseL2HTTPResponse(path string, params map[string]an
 	if err != nil {
 		return err
 	}
-
 	// 添加默认的headers
 	req.Header = c.defaultHeaders.Clone()
 

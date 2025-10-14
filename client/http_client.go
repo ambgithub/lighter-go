@@ -29,7 +29,7 @@ var (
 )
 
 // HTTPClientOption 是一个函数类型，用于以非侵入的方式配置HTTP客户端。
-// 这种"Option模式"是Go中非常推荐的一种设计，让配置变得非常灵活。
+// 这种"Option模式"是Go中非常推荐的一种设计，让配置变得非常灵
 type HTTPClientOption func(*HTTPClient)
 
 // HTTPClient 是一个经过增强的、支持高级网络配置的API客户端。
