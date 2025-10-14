@@ -8,7 +8,6 @@ require (
 	github.com/elliottech/poseidon_crypto v0.0.11
 	github.com/ethereum/go-ethereum v1.15.6
 )
-
 require (
 	github.com/bits-and-blooms/bitset v1.17.0 // indirect
 	github.com/consensys/gnark-crypto v0.14.0 // indirect

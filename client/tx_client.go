@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/elliottech/lighter-go/signer"
-	"github.com/elliottech/lighter-go/types"
+	"github.com/ambgithub/lighter-go/signer"
+	"github.com/ambgithub/lighter-go/types"
 )
 
 const (
