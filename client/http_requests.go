@@ -24,7 +24,7 @@ func (c *HTTPClient) parseResultStatus(respBody []byte) error {
 	return nil
 }
 
-// getAndParseL2HTTPResponse 现在使用新的通用GET
+// getAndParseL2HTTPResponse 现在使用新的通用GE
 func (c *HTTPClient) getAndParseL2HTTPResponse(path string, params map[string]any, result interface{}) error {
 	// 构造完整的URL
 	fullURL, err := url.Parse(c.endpoint)
