@@ -35,3 +35,20 @@ type TransferFeeInfo struct {
 	ResultCode
 	TransferFee int64 `json:"transfer_fee_usdc"`
 }
+
+// ===== 新增: 用于 orderBookDetails 接口的结构体 =====
+
+// MarketDetail 用于存储来自 orderBookDetails 接口的单个市场的详细信息。
+type MarketDetail struct {
+	Symbol        string `json:"symbol"`
+	MarketID      uint8  `json:"market_id"`
+	Status        string `json:"status"`
+	SizeDecimals  int    `json:"size_decimals"`  // 数量（基础货币）的小数位数
+	PriceDecimals int    `json:"price_decimals"` // 价格（报价货币）的小数位数
+}
+
+// OrderBookDetailsResponse 用于解析 /api/v1/orderBookDetails 接口的完整响应。
+type OrderBookDetailsResponse struct {
+	ResultCode
+	OrderBookDetails []MarketDetail `json:"order_book_details"`
+}
