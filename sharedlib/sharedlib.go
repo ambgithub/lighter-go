@@ -96,7 +96,12 @@ func CreateClient(cUrl *C.char, cPrivateKey *C.char, cChainId C.int, cApiKeyInde
 		return
 	}
 
-	httpClient := client.NewHTTPClient(url)
+	httpClient, err := client.NewHTTPClient(url)
+	if err != nil {
+		err = fmt.Errorf("error occurred when creating httpClient. err: %v", err)
+		return
+	}
+
 	txClient, err = client.NewTxClient(httpClient, privateKey, accountIndex, apiKeyIndex, chainId)
 	if err != nil {
 		err = fmt.Errorf("error occurred when creating TxClient. err: %v", err)
