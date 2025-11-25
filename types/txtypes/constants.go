@@ -17,15 +17,6 @@ const (
 )
 
 const (
-	TxTypeEmpty             = 0
-	TxTypeL1Deposit         = 1
-	TxTypeL1ChangePubKey    = 2
-	TxTypeL1CreateMarket    = 3
-	TxTypeL1UpdateMarket    = 4
-	TxTypeL1CancelAllOrders = 5
-	TxTypeL1Withdraw        = 6
-	TxTypeL1CreateOrder     = 7
-
 	TxTypeL2ChangePubKey     = 8
 	TxTypeL2CreateSubAccount = 9
 	TxTypeL2CreatePublicPool = 10
@@ -50,7 +41,6 @@ const (
 
 	TxTypeL2CreateGroupedOrders = 28
 	TxTypeL2UpdateMargin        = 29
-	TxTypeL1BurnShares          = 30
 )
 
 // Order Type
@@ -91,17 +81,6 @@ const (
 	ImmediateCancelAll      = iota
 	ScheduledCancelAll      = 1
 	AbortScheduledCancelAll = 2
-)
-
-// Margin Modes
-const (
-	CrossMargin    = iota
-	IsolatedMargin = 1
-)
-
-const (
-	RemoveFromIsolatedMargin = 0
-	AddToIsolatedMargin      = 1
 )
 
 const (
@@ -182,4 +161,15 @@ const (
 
 	MinWithdrawalAmount uint64 = 1
 	MaxWithdrawalAmount uint64 = MaxExchangeUSDC
+)
+
+// Margin Modes
+const (
+	CrossMargin    = iota
+	IsolatedMargin = 1
+)
+
+const (
+	RemoveFromIsolatedMargin = 0
+	AddToIsolatedMargin      = 1
 )

@@ -70,6 +70,17 @@ func (c *HTTPClient) getAndParseL2HTTPResponse(path string, params map[string]an
 	return nil
 }
 
+// ===== 新增: 获取订单簿详情的方法 =====
+
+// GetOrderBookDetails 获取所有活跃市场的详细订单簿信息。
+func (c *HTTPClient) GetOrderBookDetails() (*OrderBookDetailsResponse, error) {
+	result := &OrderBookDetailsResponse{}
+	err := c.getAndParseL2HTTPResponse("api/v1/orderBookDetails", nil, result)
+	if err != nil {
+		return nil, fmt.Errorf("获取订单簿详情失败: %w", err)
+	}
+	return result, nil
+}
 func (c *HTTPClient) GetNextNonce(accountIndex int64, apiKeyIndex uint8) (int64, error) {
 	result := &NextNonce{}
 	err := c.getAndParseL2HTTPResponse("api/v1/nextNonce", map[string]any{"account_index": accountIndex, "api_key_index": apiKeyIndex}, result)
@@ -136,18 +147,6 @@ func (c *HTTPClient) GetTransferFeeInfo(accountIndex, toAccountIndex int64, auth
 	}, result)
 	if err != nil {
 		return nil, err
-	}
-	return result, nil
-}
-
-// ===== 新增: 获取订单簿详情的方法 ==========
-
-// GetOrderBookDetails 获取所有活跃市场的详细订单簿信息。
-func (c *HTTPClient) GetOrderBookDetails() (*OrderBookDetailsResponse, error) {
-	result := &OrderBookDetailsResponse{}
-	err := c.getAndParseL2HTTPResponse("api/v1/orderBookDetails", nil, result)
-	if err != nil {
-		return nil, fmt.Errorf("获取订单簿详情失败: %w", err)
 	}
 	return result, nil
 }

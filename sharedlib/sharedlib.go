@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/ambgithub/lighter-go/client"
 	"github.com/ambgithub/lighter-go/types"
-	"github.com/ambgithub/lighter-go/types/txtypes"
 	curve "github.com/elliottech/poseidon_crypto/curve/ecgfp5"
 	schnorr "github.com/elliottech/poseidon_crypto/signature/schnorr"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -17,132 +15,73 @@ import (
 
 /*
 #include <stdlib.h>
-#include <stdint.h>
 typedef struct {
 	char* str;
 	char* err;
 } StrOrErr;
 
 typedef struct {
-	uint8_t txType;
-	char* txInfo;
-	char* txHash;
-	char* messageToSign;
-	char* err;
-} SignedTxResponse;
-
-typedef struct {
 	char* privateKey;
 	char* publicKey;
 	char* err;
 } ApiKeyResponse;
-
-typedef struct {
-    uint8_t MarketIndex;
-    int64_t ClientOrderIndex;
-    int64_t BaseAmount;
-    uint32_t Price;
-    uint8_t IsAsk;
-    uint8_t Type;
-    uint8_t TimeInForce;
-    uint8_t ReduceOnly;
-    uint32_t TriggerPrice;
-    int64_t OrderExpiry;
-} CreateOrderTxReq;
 */
 import "C"
 
-func wrapErr(err any) *C.char {
-	if err == nil {
-		return nil
-	}
+var (
+	txClient        *client.TxClient
+	backupTxClients map[uint8]*client.TxClient
+)
+
+func wrapErr(err error) (ret *C.char) {
 	return C.CString(fmt.Sprintf("%v", err))
-}
-
-func messageToSign(txInfo txtypes.TxInfo) string {
-	switch typed := txInfo.(type) {
-	case *txtypes.L2ChangePubKeyTxInfo:
-		return typed.GetL1SignatureBody()
-	case *txtypes.L2TransferTxInfo:
-		return typed.GetL1SignatureBody()
-	default:
-		return ""
-	}
-}
-
-func signedTxResponseErr(err any) C.SignedTxResponse {
-	return C.SignedTxResponse{err: wrapErr(err)}
-}
-
-func signedTxResponsePanic(err any) C.SignedTxResponse {
-	return signedTxResponseErr(fmt.Errorf("panic: %v", err))
-}
-
-func convertTxInfoToResponse(txInfo txtypes.TxInfo, err error) C.SignedTxResponse {
-	if err != nil {
-		return signedTxResponseErr(err)
-	}
-	if txInfo == nil {
-		return signedTxResponseErr("nil transaction info")
-	}
-
-	txInfoStr, err := txInfo.GetTxInfo()
-	if err != nil {
-		return signedTxResponseErr(err)
-	}
-
-	resp := C.SignedTxResponse{
-		txType: C.uint8_t(txInfo.GetTxType()),
-		txInfo: C.CString(txInfoStr),
-		txHash: C.CString(txInfo.GetTxHash()),
-	}
-
-	if msg := messageToSign(txInfo); msg != "" {
-		resp.messageToSign = C.CString(msg)
-	}
-
-	return resp
-}
-
-// getClient returns the go TxClient from the specified cApiKeyIndex and cAccountIndex
-func getClient(cApiKeyIndex C.int, cAccountIndex C.longlong) (*client.TxClient, error) {
-	apiKeyIndex := uint8(cApiKeyIndex)
-	accountIndex := int64(cAccountIndex)
-	return client.GetClient(apiKeyIndex, accountIndex)
-}
-
-func getTransactOpts(cNonce C.longlong) *types.TransactOpts {
-	nonce := int64(cNonce)
-	return &types.TransactOpts{
-		Nonce: &nonce,
-	}
 }
 
 //export GenerateAPIKey
 func GenerateAPIKey(cSeed *C.char) (ret C.ApiKeyResponse) {
+	var err error
+	var privateKeyStr string
+	var publicKeyStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = C.ApiKeyResponse{err: wrapErr(fmt.Errorf("panic: %v", r))}
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.ApiKeyResponse{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.ApiKeyResponse{
+				privateKey: C.CString(privateKeyStr),
+				publicKey:  C.CString(publicKeyStr),
+			}
 		}
 	}()
 
 	seed := C.GoString(cSeed)
-	privateKeyStr, publicKeyStr, err := client.GenerateAPIKey(seed)
-	if err != nil {
-		return C.ApiKeyResponse{err: wrapErr(err)}
+	seedP := &seed
+	if seed == "" {
+		seedP = nil
 	}
 
-	return C.ApiKeyResponse{
-		privateKey: C.CString(privateKeyStr),
-		publicKey:  C.CString(publicKeyStr),
-	}
+	key := curve.SampleScalar(seedP)
+
+	publicKeyStr = hexutil.Encode(schnorr.SchnorrPkFromSk(key).ToLittleEndianBytes())
+	privateKeyStr = hexutil.Encode(key.ToLittleEndianBytes())
+
+	return
 }
 
 //export CreateClient
 func CreateClient(cUrl *C.char, cPrivateKey *C.char, cChainId C.int, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret *C.char) {
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			ret = wrapErr(fmt.Errorf("panic: %v", r))
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = wrapErr(err)
 		}
 	}()
 
@@ -152,72 +91,183 @@ func CreateClient(cUrl *C.char, cPrivateKey *C.char, cChainId C.int, cApiKeyInde
 	apiKeyIndex := uint8(cApiKeyIndex)
 	accountIndex := int64(cAccountIndex)
 
-	httpClient := http.NewClient(url)
+	if accountIndex <= 0 {
+		err = fmt.Errorf("invalid account index")
+		return
+	}
 
-	_, err := client.CreateClient(httpClient, privateKey, chainId, apiKeyIndex, accountIndex)
-	return wrapErr(err)
+	httpClient, err := client.NewHTTPClient(url)
+	if err != nil {
+		err = fmt.Errorf("error occurred when creating httpClient. err: %v", err)
+		return
+	}
+
+	txClient, err = client.NewTxClient(httpClient, privateKey, accountIndex, apiKeyIndex, chainId)
+	if err != nil {
+		err = fmt.Errorf("error occurred when creating TxClient. err: %v", err)
+		return
+	}
+	if backupTxClients == nil {
+		backupTxClients = make(map[uint8]*client.TxClient)
+	}
+	backupTxClients[apiKeyIndex] = txClient
+
+	return nil
 }
 
 //export CheckClient
 func CheckClient(cApiKeyIndex C.int, cAccountIndex C.longlong) (ret *C.char) {
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			ret = wrapErr(fmt.Errorf("panic: %v", r))
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = wrapErr(err)
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return wrapErr(err)
+	apiKeyIndex := uint8(cApiKeyIndex)
+	accountIndex := int64(cAccountIndex)
+
+	client, ok := backupTxClients[apiKeyIndex]
+	if !ok {
+		err = fmt.Errorf("api key not registered")
+		return
 	}
 
-	return wrapErr(c.Check())
+	if client.GetApiKeyIndex() != apiKeyIndex {
+		err = fmt.Errorf("apiKeyIndex does not match. expected %v but got %v", client.GetApiKeyIndex(), apiKeyIndex)
+		return
+	}
+	if client.GetAccountIndex() != accountIndex {
+		err = fmt.Errorf("accountIndex does not match. expected %v but got %v", client.GetAccountIndex(), accountIndex)
+		return
+	}
+
+	// check that the API key registered on Lighter matches this one
+	key, err := client.HTTP().GetApiKey(accountIndex, apiKeyIndex)
+	if err != nil {
+		err = fmt.Errorf("failed to get Api Keys. err: %v", err)
+		return
+	}
+
+	pubKeyBytes := client.GetKeyManager().PubKeyBytes()
+	pubKeyStr := hexutil.Encode(pubKeyBytes[:])
+	pubKeyStr = strings.Replace(pubKeyStr, "0x", "", 1)
+
+	ak := key.ApiKeys[0]
+	if ak.PublicKey != pubKeyStr {
+		err = fmt.Errorf("private key does not match the one on Lighter. ownPubKey: %s response: %+v", pubKeyStr, ak)
+		return
+	}
+
+	return
 }
 
 //export SignChangePubKey
-func SignChangePubKey(cPubKey *C.char, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignChangePubKey(cPubKey *C.char, cNonce C.longlong) (ret C.StrOrErr) {
+	// Note: The ChangePubKey TX needs to be signed by the API key that's being changed to as well.
+	//       Because of that, there's no reason to add the params for apiKeyIndex & accountIndex, because this
+	//       version of the SDK doesn't have support for multiple signers.
+	//       Even if it'd had, the flow would look something like this:
+	//       - first you select which client you're sending the TX from
+	//       - then we use the ApiKeyIndex & AccountIndex from that client
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
+	nonce := int64(cNonce)
+
+	// handle PubKey
 	pubKeyStr := C.GoString(cPubKey)
 	pubKeyBytes, err := hexutil.Decode(pubKeyStr)
 	if err != nil {
-		return signedTxResponseErr(err)
+		return
 	}
 	if len(pubKeyBytes) != 40 {
-		return signedTxResponseErr(fmt.Errorf("invalid pub key length. expected 40 but got %v", len(pubKeyBytes)))
+		err = fmt.Errorf("invalid pub key length. expected 40 but got %v", len(pubKeyBytes))
+		return
 	}
 	var pubKey [40]byte
 	copy(pubKey[:], pubKeyBytes)
 
-	tx := &types.ChangePubKeyReq{
+	txInfo := &types.ChangePubKeyReq{
 		PubKey: pubKey,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := &types.TransactOpts{}
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetChangePubKeyTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetChangePubKeyTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	// === manually add MessageToSign to the response:
+	// - marshal the tx
+	// - unmarshal it into a generic map
+	// - add the new field
+	// - marshal it again
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+	obj := make(map[string]interface{})
+	err = json.Unmarshal(txInfoBytes, &obj)
+	obj["MessageToSign"] = tx.GetL1SignatureBody()
+	txInfoBytes, err = json.Marshal(obj)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignCreateOrder
-func SignCreateOrder(cMarketIndex C.int, cClientOrderIndex C.longlong, cBaseAmount C.longlong, cPrice C.int, cIsAsk C.int, cOrderType C.int, cTimeInForce C.int, cReduceOnly C.int, cTriggerPrice C.int, cOrderExpiry C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignCreateOrder(cMarketIndex C.int, cClientOrderIndex C.longlong, cBaseAmount C.longlong, cPrice C.int, cIsAsk C.int, cOrderType C.int, cTimeInForce C.int, cReduceOnly C.int, cTriggerPrice C.int, cOrderExpiry C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	marketIndex := uint8(cMarketIndex)
@@ -230,12 +280,13 @@ func SignCreateOrder(cMarketIndex C.int, cClientOrderIndex C.longlong, cBaseAmou
 	reduceOnly := uint8(cReduceOnly)
 	triggerPrice := uint32(cTriggerPrice)
 	orderExpiry := int64(cOrderExpiry)
+	nonce := int64(cNonce)
 
 	if orderExpiry == -1 {
 		orderExpiry = time.Now().Add(time.Hour * 24 * 28).UnixMilli() // 28 days
 	}
 
-	tx := &types.CreateOrderTxReq{
+	txInfo := &types.CreateOrderTxReq{
 		MarketIndex:      marketIndex,
 		ClientOrderIndex: clientOrderIndex,
 		BaseAmount:       baseAmount,
@@ -247,167 +298,248 @@ func SignCreateOrder(cMarketIndex C.int, cClientOrderIndex C.longlong, cBaseAmou
 		TriggerPrice:     triggerPrice,
 		OrderExpiry:      orderExpiry,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetCreateOrderTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
-}
-
-//export SignCreateGroupedOrders
-func SignCreateGroupedOrders(cGroupingType C.uint8_t, cOrders *C.CreateOrderTxReq, cLen C.int, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
-	defer func() {
-		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
-		}
-	}()
-
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
+	tx, err := txClient.GetCreateOrderTransaction(txInfo, ops)
 	if err != nil {
-		return signedTxResponseErr(err)
+		return
 	}
 
-	length := int(cLen)
-	orders := make([]*types.CreateOrderTxReq, length)
-	size := unsafe.Sizeof(*cOrders)
-
-	for i := 0; i < length; i++ {
-		order := (*C.CreateOrderTxReq)(unsafe.Pointer(uintptr(unsafe.Pointer(cOrders)) + uintptr(i)*uintptr(size)))
-
-		orderExpiry := int64(order.OrderExpiry)
-		if orderExpiry == -1 {
-			orderExpiry = time.Now().Add(time.Hour * 24 * 28).UnixMilli()
-		}
-
-		orders[i] = &types.CreateOrderTxReq{
-			MarketIndex:      uint8(order.MarketIndex),
-			ClientOrderIndex: int64(order.ClientOrderIndex),
-			BaseAmount:       int64(order.BaseAmount),
-			Price:            uint32(order.Price),
-			IsAsk:            uint8(order.IsAsk),
-			Type:             uint8(order.Type),
-			TimeInForce:      uint8(order.TimeInForce),
-			ReduceOnly:       uint8(order.ReduceOnly),
-			TriggerPrice:     uint32(order.TriggerPrice),
-			OrderExpiry:      orderExpiry,
-		}
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
 	}
 
-	tx := &types.CreateGroupedOrdersTxReq{
-		GroupingType: uint8(cGroupingType),
-		Orders:       orders,
-	}
-	ops := getTransactOpts(cNonce)
-
-	txInfo, err := c.GetCreateGroupedOrdersTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignCancelOrder
-func SignCancelOrder(cMarketIndex C.int, cOrderIndex C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignCancelOrder(cMarketIndex C.int, cOrderIndex C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	marketIndex := uint8(cMarketIndex)
 	orderIndex := int64(cOrderIndex)
+	nonce := int64(cNonce)
 
-	tx := &types.CancelOrderTxReq{
+	txInfo := &types.CancelOrderTxReq{
 		MarketIndex: marketIndex,
 		Index:       orderIndex,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetCancelOrderTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetCancelOrderTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignWithdraw
-func SignWithdraw(cUSDCAmount C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignWithdraw(cUSDCAmount C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	usdcAmount := uint64(cUSDCAmount)
+	nonce := int64(cNonce)
 
-	tx := &types.WithdrawTxReq{
+	txInfo := types.WithdrawTxReq{
 		USDCAmount: usdcAmount,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetWithdrawTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetWithdrawTransaction(&txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignCreateSubAccount
-func SignCreateSubAccount(cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignCreateSubAccount(cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
-	ops := getTransactOpts(cNonce)
+	nonce := int64(cNonce)
 
-	txInfo, err := c.GetCreateSubAccountTransaction(ops)
-	return convertTxInfoToResponse(txInfo, err)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
+
+	tx, err := txClient.GetCreateSubAccountTransaction(ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignCancelAllOrders
-func SignCancelAllOrders(cTimeInForce C.int, cTime C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignCancelAllOrders(cTimeInForce C.int, cTime C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	timeInForce := uint8(cTimeInForce)
 	t := int64(cTime)
+	nonce := int64(cNonce)
 
-	tx := &types.CancelAllOrdersTxReq{
+	txInfo := &types.CancelAllOrdersTxReq{
 		TimeInForce: timeInForce,
 		Time:        t,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetCancelAllOrdersTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetCancelAllOrdersTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignModifyOrder
-func SignModifyOrder(cMarketIndex C.int, cIndex C.longlong, cBaseAmount C.longlong, cPrice C.longlong, cTriggerPrice C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignModifyOrder(cMarketIndex C.int, cIndex C.longlong, cBaseAmount C.longlong, cPrice C.longlong, cTriggerPrice C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	marketIndex := uint8(cMarketIndex)
@@ -415,206 +547,402 @@ func SignModifyOrder(cMarketIndex C.int, cIndex C.longlong, cBaseAmount C.longlo
 	baseAmount := int64(cBaseAmount)
 	price := uint32(cPrice)
 	triggerPrice := uint32(cTriggerPrice)
+	nonce := int64(cNonce)
 
-	tx := &types.ModifyOrderTxReq{
+	txInfo := &types.ModifyOrderTxReq{
 		MarketIndex:  marketIndex,
 		Index:        index,
 		BaseAmount:   baseAmount,
 		Price:        price,
 		TriggerPrice: triggerPrice,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetModifyOrderTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetModifyOrderTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignTransfer
-func SignTransfer(cToAccountIndex C.longlong, cUSDCAmount C.longlong, cFee C.longlong, cMemo *C.char, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignTransfer(cToAccountIndex C.longlong, cUSDCAmount C.longlong, cFee C.longlong, cMemo *C.char, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	toAccountIndex := int64(cToAccountIndex)
 	usdcAmount := int64(cUSDCAmount)
+	nonce := int64(cNonce)
 	fee := int64(cFee)
 	memo := [32]byte{}
 	memoStr := C.GoString(cMemo)
 	if len(memoStr) != 32 {
-		return signedTxResponseErr("memo expected to be 32 bytes long")
+		err = fmt.Errorf("memo expected to be 32 bytes long")
+		return
 	}
 	for i := 0; i < 32; i++ {
 		memo[i] = byte(memoStr[i])
 	}
 
-	tx := &types.TransferTxReq{
+	txInfo := &types.TransferTxReq{
 		ToAccountIndex: toAccountIndex,
 		USDCAmount:     usdcAmount,
 		Fee:            fee,
 		Memo:           memo,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetTransferTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetTransferTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	obj := make(map[string]interface{})
+	err = json.Unmarshal(txInfoBytes, &obj)
+	obj["MessageToSign"] = tx.GetL1SignatureBody()
+	txInfoBytes, err = json.Marshal(obj)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignCreatePublicPool
-func SignCreatePublicPool(cOperatorFee C.longlong, cInitialTotalShares C.longlong, cMinOperatorShareRate C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignCreatePublicPool(cOperatorFee C.longlong, cInitialTotalShares C.longlong, cMinOperatorShareRate C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	operatorFee := int64(cOperatorFee)
 	initialTotalShares := int64(cInitialTotalShares)
 	minOperatorShareRate := int64(cMinOperatorShareRate)
+	nonce := int64(cNonce)
 
-	tx := &types.CreatePublicPoolTxReq{
+	txInfo := &types.CreatePublicPoolTxReq{
 		OperatorFee:          operatorFee,
 		InitialTotalShares:   initialTotalShares,
 		MinOperatorShareRate: minOperatorShareRate,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetCreatePublicPoolTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetCreatePublicPoolTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignUpdatePublicPool
-func SignUpdatePublicPool(cPublicPoolIndex C.longlong, cStatus C.int, cOperatorFee C.longlong, cMinOperatorShareRate C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignUpdatePublicPool(cPublicPoolIndex C.longlong, cStatus C.int, cOperatorFee C.longlong, cMinOperatorShareRate C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
-	publicPoolIndex := uint8(cPublicPoolIndex)
+	publicPoolIndex := int64(cPublicPoolIndex)
 	status := uint8(cStatus)
 	operatorFee := int64(cOperatorFee)
 	minOperatorShareRate := int64(cMinOperatorShareRate)
+	nonce := int64(cNonce)
 
-	tx := &types.UpdatePublicPoolTxReq{
-		PublicPoolIndex:      int64(publicPoolIndex),
+	txInfo := &types.UpdatePublicPoolTxReq{
+		PublicPoolIndex:      publicPoolIndex,
 		Status:               status,
 		OperatorFee:          operatorFee,
 		MinOperatorShareRate: minOperatorShareRate,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetUpdatePublicPoolTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetUpdatePublicPoolTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignMintShares
-func SignMintShares(cPublicPoolIndex C.longlong, cShareAmount C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignMintShares(cPublicPoolIndex C.longlong, cShareAmount C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	publicPoolIndex := int64(cPublicPoolIndex)
 	shareAmount := int64(cShareAmount)
+	nonce := int64(cNonce)
 
-	tx := &types.MintSharesTxReq{
+	txInfo := &types.MintSharesTxReq{
 		PublicPoolIndex: publicPoolIndex,
 		ShareAmount:     shareAmount,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetMintSharesTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetMintSharesTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignBurnShares
-func SignBurnShares(cPublicPoolIndex C.longlong, cShareAmount C.longlong, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignBurnShares(cPublicPoolIndex C.longlong, cShareAmount C.longlong, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	publicPoolIndex := int64(cPublicPoolIndex)
 	shareAmount := int64(cShareAmount)
+	nonce := int64(cNonce)
 
-	tx := &types.BurnSharesTxReq{
+	txInfo := &types.BurnSharesTxReq{
 		PublicPoolIndex: publicPoolIndex,
 		ShareAmount:     shareAmount,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetBurnSharesTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetBurnSharesTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
 //export SignUpdateLeverage
-func SignUpdateLeverage(cMarketIndex C.int, cInitialMarginFraction C.int, cMarginMode C.int, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+func SignUpdateLeverage(cMarketIndex C.int, cInitialMarginFraction C.int, cMarginMode C.int, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	marketIndex := uint8(cMarketIndex)
 	initialMarginFraction := uint16(cInitialMarginFraction)
+	nonce := int64(cNonce)
 	marginMode := uint8(cMarginMode)
 
-	tx := &types.UpdateLeverageTxReq{
+	txInfo := &types.UpdateLeverageTxReq{
 		MarketIndex:           marketIndex,
 		InitialMarginFraction: initialMarginFraction,
-		MarginMode:            marginMode,
+		MarginMode:            uint8(marginMode),
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetUpdateLeverageTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetUpdateLeverageTransaction(txInfo, ops)
+	if err != nil {
+		return
+	}
+
+	txInfoBytes, err := json.Marshal(tx)
+	if err != nil {
+		return
+	}
+
+	txInfoStr = string(txInfoBytes)
+	return
 }
 
+// CreateAuthToken Note: in order for the deadline to be valid, it needs to be at most 8 hours from now.
+// It's recommended that it'd be at most 7:55, as differences in clock times could make this
+// invalid. Still, this endpoint does not enforce that so users can generate the auth tokens in advance.
+
 //export CreateAuthToken
-func CreateAuthToken(cDeadline C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.StrOrErr) {
+func CreateAuthToken(cDeadline C.longlong) (ret C.StrOrErr) {
+	var err error
+	var authToken string
+
 	defer func() {
 		if r := recover(); r != nil {
-			ret = C.StrOrErr{err: wrapErr(fmt.Errorf("panic: %v", r))}
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(authToken),
+			}
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return C.StrOrErr{err: wrapErr(err)}
+	if txClient == nil {
+		err = fmt.Errorf("client is not created, call CreateClient() first")
+		return
 	}
 
 	deadline := int64(cDeadline)
@@ -622,40 +950,78 @@ func CreateAuthToken(cDeadline C.longlong, cApiKeyIndex C.int, cAccountIndex C.l
 		deadline = time.Now().Add(time.Hour * 7).Unix()
 	}
 
-	authToken, err := c.GetAuthToken(time.Unix(deadline, 0))
+	authToken, err = txClient.GetAuthToken(time.Unix(deadline, 0))
 	if err != nil {
-		return C.StrOrErr{err: wrapErr(err)}
+		return
 	}
 
-	return C.StrOrErr{str: C.CString(authToken)}
+	return
 }
 
-//export SignUpdateMargin
-func SignUpdateMargin(cMarketIndex C.int, cUSDCAmount C.longlong, cDirection C.int, cNonce C.longlong, cApiKeyIndex C.int, cAccountIndex C.longlong) (ret C.SignedTxResponse) {
+//export SwitchAPIKey
+func SwitchAPIKey(c C.int) (ret *C.char) {
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			ret = signedTxResponsePanic(r)
+			err = fmt.Errorf("%v", r)
+		}
+		if err != nil {
+			ret = wrapErr(err)
 		}
 	}()
 
-	c, err := getClient(cApiKeyIndex, cAccountIndex)
-	if err != nil {
-		return signedTxResponseErr(err)
+	txClient = backupTxClients[uint8(c)]
+	if txClient == nil {
+		err = fmt.Errorf("no client initialized for api key")
+	}
+
+	return
+}
+
+//export SignUpdateMargin
+func SignUpdateMargin(cMarketIndex C.int, cUSDCAmount C.longlong, cDirection C.int, cNonce C.longlong) (ret C.StrOrErr) {
+	var err error
+	var txInfoStr string
+	defer func() {
+		if r := recover(); r != nil {
+			wrapErr(fmt.Errorf("panic: %v", r))
+		}
+		if err != nil {
+			ret = C.StrOrErr{
+				err: wrapErr(err),
+			}
+		} else {
+			ret = C.StrOrErr{
+				str: C.CString(txInfoStr),
+			}
+		}
+	}()
+
+	if txClient == nil {
+		err = fmt.Errorf("Client is not created, call CreateClient() first")
 	}
 
 	marketIndex := uint8(cMarketIndex)
 	usdcAmount := int64(cUSDCAmount)
 	direction := uint8(cDirection)
+	nonce := int64(cNonce)
 
-	tx := &types.UpdateMarginTxReq{
+	txInfo := &types.UpdateMarginTxReq{
 		MarketIndex: marketIndex,
 		USDCAmount:  usdcAmount,
 		Direction:   direction,
 	}
-	ops := getTransactOpts(cNonce)
+	ops := new(types.TransactOpts)
+	if nonce != -1 {
+		ops.Nonce = &nonce
+	}
 
-	txInfo, err := c.GetUpdateMarginTransaction(tx, ops)
-	return convertTxInfoToResponse(txInfo, err)
+	tx, err := txClient.GetUpdateMarginTransaction(txInfo, ops)
+
+	txInfoBytes, err := json.Marshal(tx)
+	txInfoStr = string(txInfoBytes)
+
+	return ret
 }
 
 func main() {}
