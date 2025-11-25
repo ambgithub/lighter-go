@@ -140,7 +140,7 @@ func (c *HTTPClient) GetTransferFeeInfo(accountIndex, toAccountIndex int64, auth
 	return result, nil
 }
 
-// ===== 新增: 获取订单簿详情的方法 =====`==
+// ===== 新增: 获取订单簿详情的方法 ==========
 
 // GetOrderBookDetails 获取所有活跃市场的详细订单簿信息。
 func (c *HTTPClient) GetOrderBookDetails() (*OrderBookDetailsResponse, error) {
