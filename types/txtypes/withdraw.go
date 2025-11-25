@@ -5,8 +5,6 @@ import (
 	p2 "github.com/elliottech/poseidon_crypto/hash/poseidon2_goldilocks"
 )
 
-var _ TxInfo = (*L2WithdrawTxInfo)(nil)
-
 type L2WithdrawTxInfo struct {
 	FromAccountIndex int64
 	ApiKeyIndex      uint8
